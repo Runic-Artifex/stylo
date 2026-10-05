@@ -37,6 +37,10 @@ use rustc_hash::FxHashMap;
 use servo_arc::Arc;
 use std::fmt;
 
+/// The precision to which cubic Bézier timing functions are solved: Chromium's
+/// `kBezierEpsilon` (ui/gfx/geometry/cubic_bezier.cc).
+const BEZIER_EPSILON: f64 = 1e-7;
+
 /// Represents an animation for a given property.
 #[derive(Clone, Debug, MallocSizeOf)]
 pub struct PropertyAnimation {
@@ -61,15 +65,19 @@ impl PropertyAnimation {
     }
 
     /// The output of the timing function given the progress ration of this animation.
+    ///
+    /// Cubic Bézier timing functions are solved to Chromium's precision
+    /// (`gfx::CubicBezier`'s `kBezierEpsilon`, 1e-7). Servo's former
+    /// epsilon of `1 / (200 * duration in seconds)` (0.025 for a 200 ms
+    /// animation) put eased frames up to about 2% off the exact curve.
     fn timing_function_output(&self, progress: f64) -> f64 {
-        let epsilon = 1. / (200. * self.duration);
         // FIXME: Need to set the before flag correctly.
         // In order to get the before flag, we have to know the current animation phase
         // and whether the iteration is reversed. For now, we skip this calculation
         // by treating as if the flag is unset at all times.
         // https://drafts.csswg.org/css-easing/#step-timing-function-algo
         self.timing_function
-            .calculate_output(progress, BeforeFlag::Unset, epsilon)
+            .calculate_output(progress, BeforeFlag::Unset, BEZIER_EPSILON)
     }
 
     /// Update the given animation at a given point of progress.
