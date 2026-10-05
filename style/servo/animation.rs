@@ -1303,8 +1303,15 @@ impl ElementAnimationSet {
         E: TElement,
     {
         for animation in self.animations.iter_mut() {
-            if animation.is_cancelled_in_new_style(new_style) {
+            if animation.state != AnimationState::Canceled
+                && animation.is_cancelled_in_new_style(new_style)
+            {
                 animation.state = AnimationState::Canceled;
+                // The new style was matched with this animation's values
+                // (`TElement::animation_rule`): marking the set dirty makes
+                // `process_animations` recascade the element without them,
+                // as cancelling a transition does.
+                self.dirty = true;
             }
         }
 
