@@ -316,6 +316,14 @@ trait PrivateMatchMethods: TElement {
             return has_animations;
         }
 
+        // Keyframes resolve `var()` against the element's style: when its
+        // custom properties change, running animations take the new values
+        // (as browsers do; tw-animate-css's `slide-in-from-*` read the
+        // direction from variables a later `data-side` changes).
+        if has_animations && old_style.custom_properties() != new_style.custom_properties() {
+            return true;
+        }
+
         false
     }
 
