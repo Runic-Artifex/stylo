@@ -413,6 +413,35 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         }
     }
 
+    /// Textareas treat visible overflow as auto, including authored values.
+    /// Keep this in computed style so layout, paint and DOM observation share
+    /// the same overflow policy (Blink's StyleAdjuster::AdjustStyleForHTMLElement).
+    #[cfg(feature = "servo")]
+    fn adjust_for_textarea_overflow<E>(&mut self, element: Option<E>)
+    where
+        E: TElement,
+    {
+        use crate::properties::longhands::overflow_x::computed_value::T as Overflow;
+
+        if self.style.pseudo.is_some()
+            || !element
+                .is_some_and(|e| e.is_html_element() && e.local_name() == &**local_name!("textarea"))
+        {
+            return;
+        }
+        let overflow_x = self.style.get_box().clone_overflow_x();
+        let overflow_y = self.style.get_box().clone_overflow_y();
+        if overflow_x == Overflow::Visible || overflow_y == Overflow::Visible {
+            let box_style = self.style.mutate_box();
+            if overflow_x == Overflow::Visible {
+                box_style.set_overflow_x(Overflow::Auto);
+            }
+            if overflow_y == Overflow::Visible {
+                box_style.set_overflow_y(Overflow::Auto);
+            }
+        }
+    }
+
     /// CSS overflow-x and overflow-y require some fixup as well in some cases.
     /// https://drafts.csswg.org/css-overflow-3/#overflow-properties
     /// "Computed value: as specified, except with `visible`/`clip` computing to
@@ -1064,6 +1093,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         #[cfg(feature = "gecko")]
         self.adjust_for_webkit_line_clamp();
         self.adjust_for_position();
+        #[cfg(feature = "servo")]
+        self.adjust_for_textarea_overflow(element);
         self.adjust_for_overflow();
         #[cfg(feature = "gecko")]
         {
