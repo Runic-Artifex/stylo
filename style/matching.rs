@@ -776,9 +776,14 @@ trait PrivateMatchMethods: TElement {
             .transitions
             .retain(|transition| transition.state != AnimationState::Finished);
 
+        // A completed CSS animation can still contribute its final keyframe:
+        // forwards and both keep that value in the animation cascade until
+        // the animation is cancelled. Dropping it here made an unrelated
+        // restyle lose a filled value. Canceled animations, in contrast, must
+        // be removed so the same restyle recascades the unanimated style.
         animation_set
             .animations
-            .retain(|animation| animation.state != AnimationState::Finished);
+            .retain(|animation| animation.state != AnimationState::Canceled);
 
         // If the ElementAnimationSet is empty, and don't store it in order to
         // save memory and to avoid extra processing later.

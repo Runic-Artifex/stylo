@@ -637,7 +637,11 @@ impl Animation {
             return false;
         }
 
-        self.iterate_by(1.) == 1.
+        // A rendering step can arrive after more than one iteration has
+        // elapsed. Advancing only once leaves both the iteration and
+        // alternate direction stale until later frames catch up.
+        let elapsed_iterations = ((time - self.started_at) / self.duration).floor();
+        self.iterate_by(elapsed_iterations) > 0.
     }
 
     /// Attempts to advance this animation by `n` iterations, but stops when reaching
@@ -1302,6 +1306,21 @@ impl ElementAnimationSet {
     ) where
         E: TElement,
     {
+        // CSS animations do not survive a display:none style. Keeping a
+        // finished forward-filled animation here would let it contribute its
+        // last keyframe if the element later participates in a restyle.
+        if new_style.get_box().clone_display().is_none() {
+            let mut canceled = false;
+            for animation in self.animations.iter_mut() {
+                if animation.state != AnimationState::Canceled {
+                    animation.state = AnimationState::Canceled;
+                    canceled = true;
+                }
+            }
+            self.dirty |= canceled;
+            return;
+        }
+
         for animation in self.animations.iter_mut() {
             if animation.state != AnimationState::Canceled
                 && animation.is_cancelled_in_new_style(new_style)
@@ -1933,5 +1952,54 @@ pub fn maybe_start_animations<E>(
         }
 
         animation_state.animations.push(new_animation);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn running_animation(iteration_state: KeyframesIterationState) -> Animation {
+        Animation {
+            name: Atom::from("test"),
+            properties_changed: Default::default(),
+            computed_steps: Box::new([]),
+            started_at: 0.,
+            duration: 1.,
+            delay: 0.,
+            fill_mode: AnimationFillMode::Both,
+            iteration_state,
+            state: AnimationState::Running,
+            direction: AnimationDirection::Alternate,
+            current_direction: AnimationDirection::Normal,
+            number_of_animating_properties: 0,
+            is_new: false,
+        }
+    }
+
+    #[test]
+    fn iteration_tick_catches_up_and_flips_alternate_direction() {
+        let mut animation = running_animation(KeyframesIterationState::Finite(0., 6.));
+
+        assert!(animation.iterate_if_necessary(3.25));
+        assert!(matches!(
+            &animation.iteration_state,
+            KeyframesIterationState::Finite(current, max) if *current == 3. && *max == 6.
+        ));
+        assert_eq!(animation.started_at, 3.);
+        assert_eq!(animation.current_direction, AnimationDirection::Reverse);
+    }
+
+    #[test]
+    fn iteration_tick_stops_at_fractional_final_iteration() {
+        let mut animation = running_animation(KeyframesIterationState::Finite(0., 2.5));
+
+        assert!(animation.iterate_if_necessary(3.));
+        assert!(matches!(
+            &animation.iteration_state,
+            KeyframesIterationState::Finite(current, max) if *current == 2. && *max == 2.5
+        ));
+        assert_eq!(animation.started_at, 2.);
+        assert!(animation.has_ended(3.));
     }
 }
