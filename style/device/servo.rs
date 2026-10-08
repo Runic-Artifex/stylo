@@ -38,6 +38,19 @@ use style_traits::{CSSPixel, DevicePixel};
 
 use crate::device::Device;
 
+/// Coordinate space used when computing border and outline widths.
+/// Ordinary lengths and outline offsets do not use this policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LineWidthRounding {
+    /// Preserve Servo's device-pixel snapping (the default).
+    #[default]
+    DevicePixel,
+    /// Round resolved lengths in CSS layout pixels, after effective CSS zoom
+    /// and before viewport scaling: zero remains zero; positive lengths are
+    /// truncated with a one-pixel minimum. This is Chromium's layout policy.
+    CssPixel,
+}
+
 /// A trait used to query font metrics in clients of Stylo. This is used by Device to
 /// query font metrics in a way that is specific to the client using Stylo.
 pub trait FontMetricsProvider: Debug + Sync {
@@ -63,6 +76,8 @@ pub(super) struct ExtraDeviceData {
     device_size: Size2D<f32, DevicePixel>,
     /// The current device pixel ratio, from CSS pixels to device pixels.
     device_pixel_ratio: Scale<f32, CSSPixel, DevicePixel>,
+    #[ignore_malloc_size_of = "Pure stack type"]
+    line_width_rounding: LineWidthRounding,
     /// The current quirks mode.
     #[ignore_malloc_size_of = "Pure stack type"]
     quirks_mode: QuirksMode,
@@ -81,6 +96,19 @@ pub(super) struct ExtraDeviceData {
 }
 
 impl Device {
+    /// Select line-width rounding before attaching this device to a stylist.
+    /// Existing computed styles are not invalidated by this builder operation;
+    /// an embedder replacing a stylist's device must invalidate its styles.
+    pub fn with_line_width_rounding(mut self, rounding: LineWidthRounding) -> Self {
+        self.extra.line_width_rounding = rounding;
+        self
+    }
+
+    /// The policy used to compute border and outline widths.
+    pub fn line_width_rounding(&self) -> LineWidthRounding {
+        self.extra.line_width_rounding
+    }
+
     /// Trivially construct a new `Device`.
     pub fn new(
         media_type: MediaType,
@@ -117,6 +145,7 @@ impl Device {
                 viewport_size,
                 device_size,
                 device_pixel_ratio,
+                line_width_rounding: LineWidthRounding::default(),
                 quirks_mode,
                 prefers_color_scheme,
                 primary_pointer_capabilities,

@@ -200,7 +200,7 @@ impl ToComputedValue for LineWidth {
 }
 
 /// A specified value for a single side of the `border-width` property. The difference between this
-/// and LineWidth is whether we snap to device pixels or not.
+/// and LineWidth is whether we apply the device's line-width rounding policy.
 #[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
 pub struct BorderSideWidth(LineWidth);
 
@@ -250,6 +250,20 @@ impl ToComputedValue for BorderSideWidth {
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
+        #[cfg(feature = "servo")]
+        if context.device().line_width_rounding()
+            == crate::device::servo::LineWidthRounding::CssPixel
+        {
+            // Keep the positive/fractional length until after rounding: converting
+            // to Au first loses tiny positive widths and rounds 1.999px up to 2px.
+            let width = match self.0 {
+                LineWidth::Thin => context.style().effective_zoom.zoom(1.0),
+                LineWidth::Medium => context.style().effective_zoom.zoom(3.0),
+                LineWidth::Thick => context.style().effective_zoom.zoom(5.0),
+                LineWidth::Length(ref length) => length.to_computed_value(context).px(),
+            };
+            return ComputedBorderSideWidth(snap_to_css_pixel(width));
+        }
         ComputedBorderSideWidth(snap_as_border_width(
             self.0.to_computed_value(context),
             context,
@@ -259,6 +273,34 @@ impl ToComputedValue for BorderSideWidth {
     #[inline]
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
         Self(LineWidth::from_computed_value(&computed.0))
+    }
+}
+
+#[cfg(feature = "servo")]
+fn snap_to_css_pixel(width: f32) -> Au {
+    if width <= 0.0 {
+        Au(0)
+    } else {
+        Au::from_f32_px(width.floor().max(1.0))
+    }
+}
+
+#[cfg(all(test, feature = "servo"))]
+mod line_width_rounding_tests {
+    use super::*;
+
+    #[test]
+    fn positive_widths_survive_before_app_unit_conversion() {
+        for (specified, expected) in [
+            (0.0, 0),
+            (0.001, 1),
+            (0.5, 1),
+            (1.999, 1),
+            (2.0, 2),
+            (2.999, 2),
+        ] {
+            assert_eq!(snap_to_css_pixel(specified), Au::from_px(expected));
+        }
     }
 }
 
