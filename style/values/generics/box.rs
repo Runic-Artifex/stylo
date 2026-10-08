@@ -5,12 +5,15 @@
 //! Generic types for box properties.
 
 use crate::derives::*;
-use crate::values::animated::ToAnimatedZero;
+use crate::typed_om::{ToTyped, TypedValue};
+use crate::values::animated::{Animate, Procedure, ToAnimatedZero};
 use crate::values::generics::Optional;
+use crate::values::{ComputeSquaredDistance, SquaredDistance};
 use crate::Zero;
 use std::fmt::{self, Write};
 use style_traits::values::SequenceWriter;
 use style_traits::{CssWriter, ToCss};
+use thin_vec::ThinVec;
 
 #[derive(
     Animate,
@@ -52,9 +55,7 @@ pub enum BaselineShiftKeyword {
 /// A generic value for the `baseline-shift` property.
 /// https://drafts.csswg.org/css-inline-3/#baseline-shift
 #[derive(
-    Animate,
     Clone,
-    ComputeSquaredDistance,
     Copy,
     Debug,
     MallocSizeOf,
@@ -62,10 +63,8 @@ pub enum BaselineShiftKeyword {
     SpecifiedValueInfo,
     ToAnimatedValue,
     ToComputedValue,
-    ToCss,
     ToResolvedValue,
     ToShmem,
-    ToTyped,
 )]
 #[repr(C, u8)]
 pub enum GenericBaselineShift<LengthPercentage> {
@@ -73,21 +72,210 @@ pub enum GenericBaselineShift<LengthPercentage> {
     Keyword(BaselineShiftKeyword),
     /// Raise (positive value) or lower (negative value) by the specified length or specified percentage of the line-height.
     Length(LengthPercentage),
+    /// The initial or shorthand-omitted zero shift. Its numeric value is zero,
+    /// but it preserves the baseline category for callers that need CSS boundary intent.
+    #[value_info(skip)]
+    ImplicitZero,
 }
 
 pub use self::GenericBaselineShift as BaselineShift;
 
 impl<L: Zero> BaselineShift<L> {
-    /// Returns the initial `0` value.
+    /// Returns an explicit numeric `0` value.
     #[inline]
     pub fn zero() -> Self {
         BaselineShift::Length(Zero::zero())
     }
 }
 
+impl<L> BaselineShift<L> {
+    /// Returns the initial or shorthand-omitted zero shift.
+    #[inline]
+    pub fn implicit_zero() -> Self {
+        Self::ImplicitZero
+    }
+}
+
+impl<L: ToCss + Zero> ToCss for BaselineShift<L> {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        match self {
+            Self::Keyword(keyword) => keyword.to_css(dest),
+            Self::Length(length) => length.to_css(dest),
+            Self::ImplicitZero => L::zero().to_css(dest),
+        }
+    }
+}
+
+impl<L: ToTyped + Zero> ToTyped for BaselineShift<L> {
+    fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+        match self {
+            Self::Keyword(keyword) => keyword.to_typed(dest),
+            Self::Length(length) => length.to_typed(dest),
+            Self::ImplicitZero => L::zero().to_typed(dest),
+        }
+    }
+}
+
+impl<L: Animate + Zero> Animate for BaselineShift<L> {
+    fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
+        Ok(match (self, other) {
+            (Self::ImplicitZero, Self::ImplicitZero) => Self::ImplicitZero,
+            (Self::ImplicitZero, Self::Length(other)) => {
+                Self::Length(L::zero().animate(other, procedure)?)
+            },
+            (Self::Length(this), Self::ImplicitZero) => {
+                Self::Length(this.animate(&L::zero(), procedure)?)
+            },
+            (Self::Length(this), Self::Length(other)) => {
+                Self::Length(this.animate(other, procedure)?)
+            },
+            (Self::Keyword(this), Self::Keyword(other)) => {
+                Self::Keyword(this.animate(other, procedure)?)
+            },
+            _ => return Err(()),
+        })
+    }
+}
+
+impl<L: ComputeSquaredDistance + Zero> ComputeSquaredDistance for BaselineShift<L> {
+    fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
+        match (self, other) {
+            (Self::ImplicitZero, Self::ImplicitZero) => Ok(SquaredDistance::from_sqrt(0.)),
+            (Self::ImplicitZero, Self::Length(other)) => L::zero().compute_squared_distance(other),
+            (Self::Length(this), Self::ImplicitZero) => this.compute_squared_distance(&L::zero()),
+            (Self::Length(this), Self::Length(other)) => this.compute_squared_distance(other),
+            (Self::Keyword(this), Self::Keyword(other)) => this.compute_squared_distance(other),
+            _ => Err(()),
+        }
+    }
+}
+
 impl<L> ToAnimatedZero for BaselineShift<L> {
     fn to_animated_zero(&self) -> Result<Self, ()> {
         Err(())
+    }
+}
+
+#[cfg(test)]
+mod baseline_shift_tests {
+    use super::*;
+    use crate::typed_om::NumericValue;
+    use crate::values::computed::{Length, LengthPercentage};
+
+    type Shift = BaselineShift<LengthPercentage>;
+
+    fn length(value: f32) -> Shift {
+        Shift::Length(LengthPercentage::new_length(Length::new(value)))
+    }
+
+    #[test]
+    fn implicit_zero_preserves_category_but_exposes_numeric_zero() {
+        let implicit = Shift::implicit_zero();
+        let explicit = Shift::zero();
+        assert_ne!(implicit, explicit);
+        assert_eq!(implicit.to_css_string().to_string(), "0px");
+        assert_eq!(implicit.to_css_string(), explicit.to_css_string());
+
+        for value in [implicit, explicit] {
+            let mut typed = ThinVec::new();
+            value.to_typed(&mut typed).unwrap();
+            assert_eq!(typed.len(), 1);
+            let TypedValue::Numeric(NumericValue::Unit(unit)) = &typed[0] else {
+                panic!("zero shift must expose a numeric unit: {typed:?}");
+            };
+            assert_eq!(unit.value, 0.);
+            assert_eq!(unit.unit_str(), "px");
+        }
+
+        let specified =
+            BaselineShift::<crate::values::specified::LengthPercentage>::implicit_zero();
+        assert_eq!(specified.to_css_string().to_string(), "0px");
+        let mut typed = ThinVec::new();
+        specified.to_typed(&mut typed).unwrap();
+        assert!(
+            matches!(typed.as_slice(), [TypedValue::Numeric(NumericValue::Unit(unit))]
+            if unit.value == 0. && unit.unit_str() == "px")
+        );
+
+        let mut keywords = Vec::new();
+        <BaselineShift<crate::values::specified::LengthPercentage> as style_traits::SpecifiedValueInfo>::collect_completion_keywords(&mut |values| {
+            keywords.extend(values.iter().copied());
+        });
+        assert!(!keywords.contains(&"implicit-zero"));
+    }
+
+    #[test]
+    fn implicit_zero_interpolates_as_numeric_zero_in_both_directions() {
+        let implicit = Shift::implicit_zero();
+        let explicit = length(8.);
+        let quarter = Procedure::Interpolate { progress: 0.25 };
+        assert_eq!(implicit.animate(&explicit, quarter).unwrap(), length(2.));
+        assert_eq!(explicit.animate(&implicit, quarter).unwrap(), length(6.));
+        assert_eq!(implicit.animate(&implicit, quarter).unwrap(), implicit);
+        assert_eq!(
+            implicit.animate(&Shift::zero(), quarter).unwrap(),
+            Shift::zero()
+        );
+        assert_eq!(
+            Shift::zero().animate(&implicit, quarter).unwrap(),
+            Shift::zero()
+        );
+        assert_eq!(
+            implicit.animate(&explicit, Procedure::Add).unwrap(),
+            explicit
+        );
+        assert_eq!(
+            explicit
+                .animate(&implicit, Procedure::Accumulate { count: 2 })
+                .unwrap(),
+            length(16.)
+        );
+
+        let distance = SquaredDistance::from_sqrt(8.);
+        assert_eq!(
+            implicit.compute_squared_distance(&explicit).unwrap(),
+            distance
+        );
+        assert_eq!(
+            explicit.compute_squared_distance(&implicit).unwrap(),
+            distance
+        );
+        assert_eq!(
+            implicit.compute_squared_distance(&Shift::zero()).unwrap(),
+            SquaredDistance::from_sqrt(0.)
+        );
+        assert_eq!(
+            implicit.compute_squared_distance(&implicit).unwrap(),
+            SquaredDistance::from_sqrt(0.)
+        );
+    }
+
+    #[test]
+    fn implicit_zero_does_not_change_keyword_animation_rules() {
+        let implicit = Shift::implicit_zero();
+        let numeric = Shift::zero();
+        let sub = Shift::Keyword(BaselineShiftKeyword::Sub);
+        let super_ = Shift::Keyword(BaselineShiftKeyword::Super);
+        let half = Procedure::Interpolate { progress: 0.5 };
+        assert_eq!(sub.animate(&sub, half).unwrap(), sub);
+        assert_eq!(
+            sub.compute_squared_distance(&sub).unwrap(),
+            SquaredDistance::from_sqrt(0.)
+        );
+        for (this, other) in [
+            (&implicit, &sub),
+            (&sub, &implicit),
+            (&numeric, &sub),
+            (&sub, &numeric),
+            (&sub, &super_),
+        ] {
+            assert!(this.animate(other, half).is_err());
+            assert!(this.compute_squared_distance(other).is_err());
+        }
+        assert!(implicit.to_animated_zero().is_err());
     }
 }
 

@@ -415,7 +415,7 @@ affects = "paint"
 
 [baseline-shift]
 type = "BaselineShift"
-initial = "computed::BaselineShift::zero()"
+initial = "computed::BaselineShift::implicit_zero()"
 struct = "box"
 spec = "https://drafts.csswg.org/css-inline-3/#baseline-shift"
 servo_restyle_damage = "rebuild_box"

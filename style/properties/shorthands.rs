@@ -616,7 +616,7 @@ pub mod vertical_align {
         Ok(expanded! {
             baseline_source: baseline_source.unwrap_or(BaselineSource::Auto),
             alignment_baseline: alignment_baseline.unwrap_or(AlignmentBaseline::Baseline),
-            baseline_shift: baseline_shift.unwrap_or(BaselineShift::zero()),
+            baseline_shift: baseline_shift.unwrap_or(BaselineShift::implicit_zero()),
         })
     }
 
@@ -632,13 +632,79 @@ pub mod vertical_align {
             if *self.alignment_baseline != AlignmentBaseline::Baseline {
                 writer.item(self.alignment_baseline)?;
             }
-            if *self.baseline_shift != BaselineShift::zero() {
+            if !matches!(self.baseline_shift, BaselineShift::ImplicitZero) {
                 writer.item(self.baseline_shift)?;
             }
             if !writer.has_written() {
                 self.alignment_baseline.to_css(dest)?;
             }
             Ok(())
+        }
+    }
+
+    #[cfg(all(test, feature = "servo"))]
+    mod tests {
+        use super::*;
+        use crate::context::QuirksMode;
+        use crate::properties::longhands;
+        use crate::stylesheets::{Origin, UrlExtraData};
+        use style_traits::ParsingMode;
+
+        fn parse(css: &str) -> Longhands {
+            let url_data = UrlExtraData::from(url::Url::parse("https://example.invalid/").unwrap());
+            let context = ParserContext::new(
+                Origin::Author,
+                &url_data,
+                None,
+                ParsingMode::DEFAULT,
+                QuirksMode::NoQuirks,
+                Default::default(),
+                None,
+                None,
+                Default::default(),
+            );
+            let mut input = Parser::new(css);
+            let value = parse_value(&context, &mut input).unwrap();
+            input.expect_exhausted().unwrap();
+            value
+        }
+
+        fn serialize(value: &Longhands) -> String {
+            LonghandsToSerialize {
+                baseline_source: &value.baseline_source,
+                alignment_baseline: &value.alignment_baseline,
+                baseline_shift: &value.baseline_shift,
+            }
+            .to_css_string()
+            .to_string()
+        }
+
+        #[test]
+        fn omitted_shift_retains_baseline_category_and_initial_value() {
+            assert!(matches!(
+                longhands::baseline_shift::get_initial_specified_value(),
+                BaselineShift::ImplicitZero
+            ));
+            for css in ["baseline", "middle", "text-top", "text-bottom"] {
+                let value = parse(css);
+                assert!(matches!(value.baseline_shift, BaselineShift::ImplicitZero));
+                assert_eq!(serialize(&value), css);
+            }
+        }
+
+        #[test]
+        fn explicit_zero_lengths_keep_numeric_category_and_shorthand_serialization() {
+            for css in ["0px", "0%", "calc(0px)"] {
+                let value = parse(css);
+                assert!(matches!(value.baseline_shift, BaselineShift::Length(_)));
+                assert_ne!(serialize(&value), "baseline");
+            }
+            assert_eq!(serialize(&parse("baseline")), "baseline");
+            assert_eq!(serialize(&parse("0px")), "0px");
+            assert_eq!(serialize(&parse("middle 0px")), "middle 0px");
+            let keyword = parse("sub");
+            assert!(matches!(keyword.baseline_shift, BaselineShift::Keyword(_)));
+            assert_eq!(serialize(&keyword), "sub");
         }
     }
 }
