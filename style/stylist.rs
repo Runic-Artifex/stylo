@@ -1654,7 +1654,16 @@ impl Stylist {
     /// Also, the device that arrives here may need to take the viewport rules
     /// into account.
     pub fn set_device(&mut self, device: Device, guards: &StylesheetGuards) -> OriginSet {
+        #[cfg(feature = "servo")]
+        let line_width_rounding_changed =
+            self.device.line_width_rounding() != device.line_width_rounding();
         self.device = device;
+        // The rounding policy affects computed values independently of media
+        // queries. Embedders must invalidate all origins when replacing it.
+        #[cfg(feature = "servo")]
+        if line_width_rounding_changed {
+            return OriginSet::all();
+        }
         self.media_features_change_changed_style(guards, &self.device)
     }
 

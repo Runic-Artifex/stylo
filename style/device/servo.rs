@@ -97,8 +97,9 @@ pub(super) struct ExtraDeviceData {
 
 impl Device {
     /// Select line-width rounding before attaching this device to a stylist.
-    /// Existing computed styles are not invalidated by this builder operation;
-    /// an embedder replacing a stylist's device must invalidate its styles.
+    /// Existing computed styles are not invalidated by this builder operation.
+    /// `Stylist::set_device` reports all origins as changed when the policy
+    /// changes; its caller must apply that invalidation as usual.
     pub fn with_line_width_rounding(mut self, rounding: LineWidthRounding) -> Self {
         self.extra.line_width_rounding = rounding;
         self
