@@ -101,8 +101,8 @@ type = "LineClamp"
 initial = "computed::LineClamp::none()"
 struct = "box"
 boxed = true
-engine = "gecko"
 gecko_pref = "layout.css.line-clamp.enabled"
+servo_pref = "layout.css.line-clamp.enabled"
 gecko_ffi_name = "mWebkitLineClamp"
 spec = "https://drafts.csswg.org/css-overflow-4/#propdef-line-clamp"
 affects = "layout"
@@ -4204,13 +4204,12 @@ keyword = { values = ["normal", "reverse"] }
 
 [-moz-box-orient]
 struct = "xul"
-engine = "gecko"
 spec = "Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/box-orient)"
 animation_type = "discrete"
 affects = "layout"
 gecko_ffi_name = "mBoxOrient"
 aliases = ["-webkit-box-orient"]
-keyword = { values = ["horizontal", "vertical"], gecko_aliases = ["inline-axis=horizontal", "block-axis=vertical"] }
+keyword = { values = ["horizontal", "vertical"], gecko_aliases = ["inline-axis=horizontal", "block-axis=vertical"], servo_aliases = ["inline-axis=horizontal", "block-axis=vertical"] }
 
 [-moz-box-pack]
 struct = "xul"
