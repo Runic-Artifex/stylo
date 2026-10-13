@@ -13,7 +13,7 @@ use crate::media_queries::MediaType;
 use crate::properties::style_structs::Font;
 use crate::properties::ComputedValues;
 use crate::queries::values::PrefersColorScheme;
-use crate::servo::media_features::PointerCapabilities;
+use crate::servo::media_features::{PointerCapabilities, PrefersContrast, PrefersReducedMotion};
 use crate::values::computed::font::GenericFontFamily;
 use crate::values::computed::{
     CSSPixelLength, Length, LineHeight, LinkParameters, NonNegativeLength,
@@ -84,6 +84,12 @@ pub(super) struct ExtraDeviceData {
     /// Whether the user prefers light mode or dark mode
     #[ignore_malloc_size_of = "Pure stack type"]
     prefers_color_scheme: PrefersColorScheme,
+    /// Whether the user prefers reduced motion
+    #[ignore_malloc_size_of = "Pure stack type"]
+    prefers_reduced_motion: PrefersReducedMotion,
+    /// The contrast the user prefers
+    #[ignore_malloc_size_of = "Pure stack type"]
+    prefers_contrast: PrefersContrast,
     /// The capabilities of the primary pointer input
     #[ignore_malloc_size_of = "Pure stack type"]
     primary_pointer_capabilities: PointerCapabilities,
@@ -149,6 +155,8 @@ impl Device {
                 line_width_rounding: LineWidthRounding::default(),
                 quirks_mode,
                 prefers_color_scheme,
+                prefers_reduced_motion: PrefersReducedMotion::default(),
+                prefers_contrast: PrefersContrast::default(),
                 primary_pointer_capabilities,
                 all_pointer_capabilities,
                 font_metrics_provider,
@@ -333,6 +341,36 @@ impl Device {
     /// Returns the color scheme of this [`Device`].
     pub fn color_scheme(&self) -> PrefersColorScheme {
         self.extra.prefers_color_scheme
+    }
+
+    /// Set the [`PrefersReducedMotion`] value on this [`Device`] (no preference
+    /// unless set).
+    ///
+    /// Note that this does not update any associated `Stylist`. For this you must call
+    /// `Stylist::media_features_change_changed_style` and
+    /// `Stylist::force_stylesheet_origins_dirty`.
+    pub fn set_prefers_reduced_motion(&mut self, preference: PrefersReducedMotion) {
+        self.extra.prefers_reduced_motion = preference;
+    }
+
+    /// Returns the reduced motion preference of this [`Device`].
+    pub fn prefers_reduced_motion(&self) -> PrefersReducedMotion {
+        self.extra.prefers_reduced_motion
+    }
+
+    /// Set the [`PrefersContrast`] value on this [`Device`] (no preference unless
+    /// set).
+    ///
+    /// Note that this does not update any associated `Stylist`. For this you must call
+    /// `Stylist::media_features_change_changed_style` and
+    /// `Stylist::force_stylesheet_origins_dirty`.
+    pub fn set_prefers_contrast(&mut self, preference: PrefersContrast) {
+        self.extra.prefers_contrast = preference;
+    }
+
+    /// Returns the contrast preference of this [`Device`].
+    pub fn prefers_contrast(&self) -> PrefersContrast {
+        self.extra.prefers_contrast
     }
 
     /// Set the [`PointerCapbabilities`] value for the primary pointer on this [`Device`]

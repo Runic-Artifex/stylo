@@ -68,6 +68,7 @@ fetch
 file
 fill
 fill-opacity
+forced-colors
 formdata
 fullscreenchange
 fullscreenerror
@@ -124,6 +125,8 @@ pointer
 popstate
 postershown
 prefers-color-scheme
+prefers-contrast
+prefers-reduced-motion
 print
 progress
 radio

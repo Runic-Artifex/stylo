@@ -8,6 +8,7 @@ use crate::derives::*;
 use crate::queries::feature::{AllowsRanges, Evaluator, FeatureFlags, QueryFeatureDescription};
 use crate::queries::values::{Orientation, PrefersColorScheme};
 use crate::values::computed::{CSSPixelLength, Context, Ratio, Resolution};
+use crate::values::specified::color::ForcedColors;
 use std::fmt::Debug;
 
 /// https://drafts.csswg.org/mediaqueries-4/#width
@@ -67,6 +68,63 @@ fn eval_prefers_color_scheme(context: &Context, query_value: Option<PrefersColor
     match query_value {
         Some(v) => context.device().color_scheme() == v,
         None => true,
+    }
+}
+
+/// Values for the prefers-reduced-motion media feature.
+/// https://drafts.csswg.org/mediaqueries-5/#prefers-reduced-motion
+#[derive(Clone, Copy, Debug, Default, FromPrimitive, Parse, PartialEq, ToCss)]
+#[repr(u8)]
+#[allow(missing_docs)]
+pub enum PrefersReducedMotion {
+    #[default]
+    NoPreference,
+    Reduce,
+}
+
+/// https://drafts.csswg.org/mediaqueries-5/#prefers-reduced-motion
+fn eval_prefers_reduced_motion(
+    context: &Context,
+    query_value: Option<PrefersReducedMotion>,
+) -> bool {
+    let preference = context.device().prefers_reduced_motion();
+    match query_value {
+        Some(v) => v == preference,
+        None => preference == PrefersReducedMotion::Reduce,
+    }
+}
+
+/// Values for the prefers-contrast media feature.
+/// https://drafts.csswg.org/mediaqueries-5/#prefers-contrast
+#[derive(Clone, Copy, Debug, Default, FromPrimitive, Parse, PartialEq, ToCss)]
+#[repr(u8)]
+pub enum PrefersContrast {
+    /// More contrast is preferred.
+    More,
+    /// Less contrast is preferred.
+    Less,
+    /// A contrast that is neither more nor less (forced colors).
+    Custom,
+    /// No preference.
+    #[default]
+    NoPreference,
+}
+
+/// https://drafts.csswg.org/mediaqueries-5/#prefers-contrast
+fn eval_prefers_contrast(context: &Context, query_value: Option<PrefersContrast>) -> bool {
+    let preference = context.device().prefers_contrast();
+    match query_value {
+        Some(v) => v == preference,
+        None => preference != PrefersContrast::NoPreference,
+    }
+}
+
+/// https://drafts.csswg.org/mediaqueries-5/#forced-colors
+fn eval_forced_colors(context: &Context, query_value: Option<ForcedColors>) -> bool {
+    let forced = context.device().forced_colors();
+    match query_value {
+        Some(query_value) => query_value == forced,
+        None => forced != ForcedColors::None,
     }
 }
 
@@ -160,7 +218,7 @@ fn eval_aspect_ratio(context: &Context) -> Ratio {
 }
 
 /// A list with all the media features that Servo supports.
-pub static MEDIA_FEATURES: [QueryFeatureDescription; 15] = [
+pub static MEDIA_FEATURES: [QueryFeatureDescription; 18] = [
     feature!(
         atom!("width"),
         AllowsRanges::Yes,
@@ -249,6 +307,24 @@ pub static MEDIA_FEATURES: [QueryFeatureDescription; 15] = [
         atom!("prefers-color-scheme"),
         AllowsRanges::No,
         keyword_evaluator!(eval_prefers_color_scheme, PrefersColorScheme),
+        FeatureFlags::empty(),
+    ),
+    feature!(
+        atom!("prefers-reduced-motion"),
+        AllowsRanges::No,
+        keyword_evaluator!(eval_prefers_reduced_motion, PrefersReducedMotion),
+        FeatureFlags::empty(),
+    ),
+    feature!(
+        atom!("prefers-contrast"),
+        AllowsRanges::No,
+        keyword_evaluator!(eval_prefers_contrast, PrefersContrast),
+        FeatureFlags::empty(),
+    ),
+    feature!(
+        atom!("forced-colors"),
+        AllowsRanges::No,
+        keyword_evaluator!(eval_forced_colors, ForcedColors),
         FeatureFlags::empty(),
     ),
 ];
