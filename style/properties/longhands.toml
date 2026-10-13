@@ -3994,7 +3994,7 @@ spec = "https://drafts.csswg.org/css-text-4/#text-wrap-style"
 animation_type = "discrete"
 affects = "layout"
 servo_restyle_damage = "rebuild_box"
-keyword = { values = ["auto", "stable", "balance"] }
+keyword = { values = ["auto", "stable", "balance"], extra_servo_values = ["pretty"] }
 
 [list-style-position]
 struct = "list"
