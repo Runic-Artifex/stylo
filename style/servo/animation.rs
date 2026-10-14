@@ -1867,7 +1867,7 @@ pub fn maybe_start_animations<E>(
     E: TElement,
 {
     let style = new_style.get_ui();
-    for (i, name) in style.animation_name_iter().enumerate() {
+    'names: for (i, name) in style.animation_name_iter().enumerate() {
         let name = match name.as_atom() {
             Some(atom) => atom,
             None => continue,
@@ -1964,6 +1964,7 @@ pub fn maybe_start_animations<E>(
         animation_state.dirty = true;
 
         // If the animation was already present in the list for the node, just update its state.
+        // The animations after it in `animation-name` are updated (or started) as well.
         for existing_animation in animation_state.animations.iter_mut() {
             if existing_animation.state == AnimationState::Canceled {
                 continue;
@@ -1972,7 +1973,7 @@ pub fn maybe_start_animations<E>(
             if new_animation.name == existing_animation.name {
                 existing_animation
                     .update_from_other(&new_animation, context.current_time_for_animations);
-                return;
+                continue 'names;
             }
         }
 
