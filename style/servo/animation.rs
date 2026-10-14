@@ -27,8 +27,10 @@ use crate::style_resolver::StyleResolverForElement;
 use crate::stylesheets::keyframes_rule::{KeyframesAnimation, KeyframesStep, KeyframesStepValue};
 use crate::stylesheets::layer_rule::LayerOrder;
 use crate::values::animated::{Animate, Procedure};
-use crate::values::computed::TimingFunction;
+use crate::values::computed::{Length, LengthPercentage, TimingFunction};
+use crate::values::generics::animation::GenericAnimationTimeline;
 use crate::values::generics::easing::BeforeFlag;
+use crate::values::specified::animation::{ScrollAxis, Scroller, TimelineRangeName};
 use crate::values::specified::TransitionBehavior;
 use crate::Atom;
 use debug_unreachable::debug_unreachable;
@@ -82,7 +84,21 @@ impl PropertyAnimation {
 
     /// Update the given animation at a given point of progress.
     fn calculate_value(&self, progress: f64) -> AnimationValue {
-        let progress = self.timing_function_output(progress);
+        self.calculate_value_with_before_flag(progress, false)
+    }
+
+    /// Update the given animation at a given point of progress, with the
+    /// before flag of the timing function's input set or not
+    /// (<https://drafts.csswg.org/css-easing/#before-flag>).
+    fn calculate_value_with_before_flag(&self, progress: f64, before: bool) -> AnimationValue {
+        let before_flag = if before {
+            BeforeFlag::Set
+        } else {
+            BeforeFlag::Unset
+        };
+        let progress = self
+            .timing_function
+            .calculate_output(progress, before_flag, BEZIER_EPSILON);
         let procedure = Procedure::Interpolate { progress };
         self.from.animate(&self.to, procedure).unwrap_or_else(|()| {
             // Fall back to discrete interpolation
@@ -131,6 +147,129 @@ impl AnimationState {
 enum IgnoreTransitions {
     Canceled,
     CanceledAndFinished,
+}
+
+/// The timeline an animation follows, from its `animation-timeline`
+/// (<https://drafts.csswg.org/css-animations-2/#animation-timeline>).
+#[derive(Clone, Debug, MallocSizeOf, PartialEq)]
+pub enum AnimationTimelineKind {
+    /// `auto`: the document timeline. The animation is time-based.
+    Document,
+    /// `none`: no timeline. The animation is inactive: it has no effect.
+    None,
+    /// `scroll()`: an anonymous scroll progress timeline. The animation is
+    /// scroll-driven: its value follows the timeline sample the embedder
+    /// sets after layout (`Animation::timeline_sample`), not time.
+    Scroll(ScrollTimeline),
+    /// A timeline (or a timing on a scroll timeline) this implementation
+    /// does not run. The animation has no effect; the embedder can find
+    /// it with `Animation::unsupported_timeline` and report it.
+    Unsupported(UnsupportedTimeline),
+}
+
+/// An anonymous scroll progress timeline (`scroll()`) and the animation's
+/// attachment range on it
+/// (<https://drafts.csswg.org/scroll-animations-1/#scroll-notation>).
+#[derive(Clone, Debug, MallocSizeOf, PartialEq)]
+pub struct ScrollTimeline {
+    /// The scroll container whose scroll position drives the timeline.
+    pub scroller: Scroller,
+    /// The axis of that scroll container.
+    pub axis: ScrollAxis,
+    /// `animation-range-start` (`normal` is 0%), resolved against the
+    /// scroll range: percentages are of the maximum scroll offset.
+    pub range_start: LengthPercentage,
+    /// `animation-range-end` (`normal` is 100%).
+    pub range_end: LengthPercentage,
+}
+
+/// What an animation uses that is not supported: the animation has no
+/// effect.
+#[derive(Clone, Copy, Debug, Eq, MallocSizeOf, PartialEq)]
+pub enum UnsupportedTimeline {
+    /// A named scroll or view progress timeline (`animation-timeline: --name`).
+    NamedTimeline,
+    /// A view progress timeline (`view()`).
+    ViewTimeline,
+    /// A named timeline range (`cover`, `contain`, `entry`, ...) in
+    /// `animation-range`.
+    NamedRange,
+    /// A timing on a scroll timeline whose conversion to proportions of the
+    /// range is not supported: an infinite or zero iteration count, a zero
+    /// duration or a negative delay.
+    Timing,
+    /// The play state of a scroll-driven animation changed after it started
+    /// (only an animation paused from its start is supported).
+    PlayStateChange,
+    /// A scroll-driven animation (or one without a timeline) moved to the
+    /// document timeline or to none, or a time-based animation to none.
+    TimelineChange,
+}
+
+/// The state of an active scroll timeline at a frame, in CSS pixels.
+#[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq)]
+pub struct ScrollTimelineSample {
+    /// The scroll offset in the timeline's axis, as the distance scrolled
+    /// from the scroll origin (0 to `max`).
+    pub offset: f64,
+    /// The maximum scroll offset in that axis (greater than zero: a
+    /// scroller that cannot scroll in the axis makes the timeline inactive).
+    pub max: f64,
+}
+
+/// The timeline of `animation-timeline` at `index`, with the animation range
+/// of that index.
+fn animation_timeline_kind(
+    style: &crate::properties::style_structs::UI,
+    index: usize,
+) -> AnimationTimelineKind {
+    match style.animation_timeline_mod(index) {
+        GenericAnimationTimeline::Auto => AnimationTimelineKind::Document,
+        GenericAnimationTimeline::Timeline(name) => {
+            if name.value.is_none() {
+                AnimationTimelineKind::None
+            } else {
+                AnimationTimelineKind::Unsupported(UnsupportedTimeline::NamedTimeline)
+            }
+        },
+        GenericAnimationTimeline::View(..) => {
+            AnimationTimelineKind::Unsupported(UnsupportedTimeline::ViewTimeline)
+        },
+        GenericAnimationTimeline::Scroll(function) => {
+            let start = style.animation_range_start_mod(index).0;
+            let end = style.animation_range_end_mod(index).0;
+            let plain = |name: &TimelineRangeName| {
+                matches!(name, TimelineRangeName::Normal | TimelineRangeName::None)
+            };
+            if !plain(&start.name) || !plain(&end.name) {
+                return AnimationTimelineKind::Unsupported(UnsupportedTimeline::NamedRange);
+            }
+            AnimationTimelineKind::Scroll(ScrollTimeline {
+                scroller: function.scroller,
+                axis: function.axis,
+                range_start: start.lp,
+                range_end: end.lp,
+            })
+        },
+    }
+}
+
+/// An `animation-range` offset in CSS pixels on a scroll range of `max`.
+fn resolve_range_offset(offset: &LengthPercentage, max: f64) -> f64 {
+    if let Some(length) = offset.to_length() {
+        return length.px() as f64;
+    }
+    if let Some(percentage) = offset.to_percentage() {
+        return percentage.0 as f64 * max;
+    }
+    offset.resolve(Length::new(max as f32)).px() as f64
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Phase {
+    Before,
+    Active,
+    After,
 }
 
 /// This structure represents a keyframes animation current iteration state.
@@ -390,6 +529,17 @@ impl Direction {
     }
 }
 
+/// Insert the values of a keyframe that declares every animating property
+/// (the first or the last).
+fn add_keyframe_to_map(keyframe: &ComputedKeyframe, map: &mut AnimationValueMap) {
+    for value_or_reference in keyframe.values.iter() {
+        let AnimationValueOrReference::AnimationValue(value) = value_or_reference else {
+            unreachable!("First or last keyframes define all properties");
+        };
+        map.insert(value.id().to_owned(), value.clone());
+    }
+}
+
 impl Animation {
     /// Starting from the keyframe at `keyframe_index`, returns the contents of the next keyframe in `direction`
     /// that sets the property at `property_index`.
@@ -616,9 +766,55 @@ pub struct Animation {
     /// Whether or not this animation is new and or has already been tracked
     /// by the script thread.
     pub is_new: bool,
+
+    /// The timeline this animation follows.
+    pub timeline: AnimationTimelineKind,
+
+    /// The state of a scroll timeline, which the embedder sets after layout
+    /// (and which the next style update uses): `None` while the timeline is
+    /// inactive or not sampled yet. A scroll-driven animation has no effect
+    /// while its timeline is inactive.
+    pub timeline_sample: Option<ScrollTimelineSample>,
+
+    /// Whether `animation-duration` is `auto` (`duration` is then 0).
+    pub auto_duration: bool,
+
+    /// A change of a scroll-driven animation (of its play state or timeline)
+    /// whose result is not supported: the animation has no effect from then on.
+    pub unsupported_change: Option<UnsupportedTimeline>,
 }
 
 impl Animation {
+    /// Whether this animation runs on the document timeline: its value
+    /// follows time, and it needs ticks, iterates, finishes and has events.
+    pub fn is_time_based(&self) -> bool {
+        self.timeline == AnimationTimelineKind::Document && self.unsupported_change.is_none()
+    }
+
+    /// The scroll timeline of a supported scroll-driven animation.
+    pub fn scroll_timeline(&self) -> Option<&ScrollTimeline> {
+        match self.timeline {
+            AnimationTimelineKind::Scroll(ref timeline) if self.unsupported_change.is_none() => {
+                Some(timeline)
+            },
+            _ => None,
+        }
+    }
+
+    /// Why this animation has no effect, if it uses an unsupported timeline,
+    /// range, timing or change.
+    pub fn unsupported_timeline(&self) -> Option<UnsupportedTimeline> {
+        self.unsupported_change.or(match self.timeline {
+            AnimationTimelineKind::Unsupported(reason) => Some(reason),
+            _ => None,
+        })
+    }
+
+    /// Whether this animation needs ticks of the document timeline.
+    fn needs_to_be_ticked(&self) -> bool {
+        self.is_time_based() && self.state.needs_to_be_ticked()
+    }
+
     /// Whether or not this animation is cancelled by changes from a new style.
     fn is_cancelled_in_new_style(&self, new_style: &Arc<ComputedValues>) -> bool {
         let new_ui = new_style.get_ui();
@@ -630,13 +826,22 @@ impl Animation {
             None => return true,
         };
 
-        new_ui.animation_duration_mod(index).seconds() == 0.
+        // An `auto` (or `0s`) duration on the document timeline is a 0s
+        // animation, which is not run; on a scroll timeline, `auto` fills the
+        // timeline's range.
+        new_ui.animation_timeline_mod(index).is_auto()
+            && new_ui.animation_duration_mod(index).seconds() == 0.
     }
 
     /// Given the current time, advances this animation to the next iteration,
     /// updates times, and then toggles the direction if appropriate. Otherwise
     /// does nothing. Returns true if this animation has iterated.
     pub fn iterate_if_necessary(&mut self, time: f64) -> bool {
+        // Only animations on the document timeline iterate with time.
+        if !self.is_time_based() {
+            return false;
+        }
+
         if !self.iteration_over(time) {
             return false;
         }
@@ -738,6 +943,11 @@ impl Animation {
     /// not take into account canceling i.e. when an animation or transition is
     /// canceled due to changes in the style.
     pub fn has_ended(&self, time: f64) -> bool {
+        // A scroll-driven animation does not end with time.
+        if !self.is_time_based() {
+            return false;
+        }
+
         if !self.on_last_iteration() {
             return false;
         }
@@ -764,6 +974,11 @@ impl Animation {
     /// account times, so here's that logic.
     pub fn update_from_other(&mut self, other: &Self, now: f64) {
         use self::AnimationState::*;
+
+        if !self.is_time_based() || !other.is_time_based() {
+            self.update_progress_based_from_other(other);
+            return;
+        }
 
         debug!(
             "KeyframesAnimationState::update_from_other({:?}, {:?})",
@@ -873,11 +1088,169 @@ impl Animation {
         }
     }
 
+    /// Update an animation that is (or becomes) not time-based from the
+    /// animation a new style describes. A scroll-driven animation's value is
+    /// a function of its timeline sample and its current properties, so
+    /// Chromium's update in place amounts to taking the new properties, with
+    /// the last sample. Changes whose result is not measured are flagged.
+    fn update_progress_based_from_other(&mut self, other: &Self) {
+        use self::AnimationTimelineKind::{Document, Scroll};
+
+        let mut unsupported = self.unsupported_change;
+        if self.timeline != other.timeline
+            && matches!(other.timeline, Document | AnimationTimelineKind::None)
+        {
+            unsupported.get_or_insert(UnsupportedTimeline::TimelineChange);
+        }
+        let paused = |animation: &Self| matches!(animation.state, AnimationState::Paused(..));
+        let scroll_driven =
+            matches!(self.timeline, Scroll(..)) || matches!(other.timeline, Scroll(..));
+        if scroll_driven
+            && (paused(self) != paused(other) || (paused(other) && self.timeline == Document))
+        {
+            unsupported.get_or_insert(UnsupportedTimeline::PlayStateChange);
+        }
+
+        let sample = self.timeline_sample;
+        *self = other.clone();
+        self.timeline_sample = sample;
+        self.unsupported_change = unsupported;
+    }
+
+    /// The directed progress through the current iteration of a scroll-driven
+    /// animation at a timeline sample, and whether the before flag of its
+    /// easing is set, or `None` if the animation has no effect there.
+    ///
+    /// The animation's range on the timeline is its time-based timing
+    /// converted to proportions: the delay and the iterations share it in the
+    /// ratio of their times (`auto` durations divide it between the
+    /// iterations, and the delay is not used), and the local time is the
+    /// progress through the range times the total time
+    /// (<https://drafts.csswg.org/web-animations-2/#converting-time-values-to-proportions>).
+    /// Phases, fill and iterations then follow Web Animations, except that at
+    /// the end of the timeline the end of the active interval is in the
+    /// active phase (Chromium 153: with the default range and no fill, the
+    /// end value applies when the scroller is fully scrolled).
+    pub fn scroll_timeline_progress(&self, sample: ScrollTimelineSample) -> Option<(f64, bool)> {
+        let timeline = self.scroll_timeline()?;
+        let iterations = match self.iteration_state {
+            KeyframesIterationState::Finite(_, max) => max,
+            KeyframesIterationState::Infinite(..) => return None,
+        };
+        if !(iterations > 0.) || !iterations.is_finite() {
+            return None;
+        }
+        let (delay, iteration_duration) = if self.auto_duration {
+            (0., 1. / iterations)
+        } else {
+            if !(self.duration > 0.) || self.delay < 0. {
+                return None;
+            }
+            (self.delay, self.duration)
+        };
+        let active_duration = iteration_duration * iterations;
+        let end_time = delay + active_duration;
+
+        let (local_time, at_timeline_end) = match self.state {
+            // Paused since it started (any other pause is flagged): the
+            // current time stays at the start of the range.
+            AnimationState::Paused(..) => (0., false),
+            _ => {
+                let start = resolve_range_offset(&timeline.range_start, sample.max);
+                let end = resolve_range_offset(&timeline.range_end, sample.max);
+                let position = sample.offset - start;
+                let length = end - start;
+                // A range that ends before it starts is empty, at its start.
+                let local_time = if length > 0. {
+                    position / length * end_time
+                } else if position < 0. {
+                    f64::NEG_INFINITY
+                } else if position > 0. {
+                    f64::INFINITY
+                } else {
+                    end_time
+                };
+                (local_time, sample.offset >= sample.max)
+            },
+        };
+
+        let phase = if local_time < delay {
+            Phase::Before
+        } else if local_time > end_time || (local_time == end_time && !at_timeline_end) {
+            Phase::After
+        } else {
+            Phase::Active
+        };
+        let active_time = match phase {
+            Phase::Before => {
+                if !matches!(
+                    self.fill_mode,
+                    AnimationFillMode::Backwards | AnimationFillMode::Both
+                ) {
+                    return None;
+                }
+                0.
+            },
+            Phase::Active => (local_time - delay).min(active_duration),
+            Phase::After => {
+                if !matches!(
+                    self.fill_mode,
+                    AnimationFillMode::Forwards | AnimationFillMode::Both
+                ) {
+                    return None;
+                }
+                active_duration
+            },
+        };
+
+        // https://drafts.csswg.org/web-animations-1/#calculating-the-simple-iteration-progress
+        let at_active_end = active_time == active_duration;
+        let overall_progress = if at_active_end {
+            iterations
+        } else {
+            active_time / iteration_duration
+        };
+        let mut simple_progress = overall_progress % 1.;
+        if simple_progress == 0. && phase != Phase::Before && at_active_end {
+            simple_progress = 1.;
+        }
+        let current_iteration = if simple_progress == 1. {
+            overall_progress.floor() - 1.
+        } else {
+            overall_progress.floor()
+        };
+        let forwards = match self.direction {
+            AnimationDirection::Normal => true,
+            AnimationDirection::Reverse => false,
+            AnimationDirection::Alternate => current_iteration % 2. == 0.,
+            AnimationDirection::AlternateReverse => current_iteration % 2. != 0.,
+        };
+        let directed_progress = if forwards {
+            simple_progress
+        } else {
+            1. - simple_progress
+        };
+        let before_flag =
+            (phase == Phase::Before && forwards) || (phase == Phase::After && !forwards);
+        Some((directed_progress, before_flag))
+    }
+
     /// Fill in an `AnimationValueMap` with values calculated from this animation at
-    /// the given time value.
+    /// the given time value (or, for a scroll-driven animation, at its
+    /// timeline sample).
     fn get_property_declaration_at_time(&self, now: f64, map: &mut AnimationValueMap) {
         if self.computed_steps.is_empty() {
             // Nothing to do.
+            return;
+        }
+
+        if !self.is_time_based() {
+            let progress = self
+                .timeline_sample
+                .and_then(|sample| self.scroll_timeline_progress(sample));
+            if let Some((progress, before_flag)) = progress {
+                self.add_keyframe_values(progress, AnimationDirection::Normal, before_flag, map);
+            }
             return;
         }
 
@@ -904,17 +1277,6 @@ impl Animation {
             return;
         }
 
-        // If we only need to take into account one keyframe, then exit early
-        // in order to avoid doing more work.
-        let mut add_declarations_to_map = |keyframe: &ComputedKeyframe| {
-            for value_or_reference in keyframe.values.iter() {
-                let AnimationValueOrReference::AnimationValue(value) = value_or_reference else {
-                    unreachable!("First or last keyframes define all properties");
-                };
-                map.insert(value.id().to_owned(), value.clone());
-            }
-        };
-
         // Handle negative progress (before animation start) with backwards/both fill mode
         if progress < 0.0 {
             if let Some(keyframe) = match self.current_direction {
@@ -922,17 +1284,33 @@ impl Animation {
                 AnimationDirection::Reverse => self.computed_steps.last(),
                 _ => unreachable!("Current animation direction can only be `normal` or `reverse`."),
             } {
-                add_declarations_to_map(keyframe);
+                add_keyframe_to_map(keyframe, map);
             }
             return;
         }
 
         // Progress clamped to the current iteration [0.0, 1.0].
         let total_progress = progress.min(self.current_iteration_end_progress()).max(0.0);
+        self.add_keyframe_values(total_progress, self.current_direction, false, map);
+    }
+
+    /// Fill in an `AnimationValueMap` with the keyframe values at
+    /// `total_progress` (0 to 1) through an iteration played in
+    /// `current_direction`.
+    fn add_keyframe_values(
+        &self,
+        total_progress: f64,
+        current_direction: AnimationDirection,
+        before_flag: bool,
+        map: &mut AnimationValueMap,
+    ) {
+        let mut add_declarations_to_map = |keyframe: &ComputedKeyframe| {
+            add_keyframe_to_map(keyframe, map);
+        };
 
         // At 1.0 there is nothing left to interpolate. Return end keyframe.
         if total_progress == 1.0 {
-            let keyframe = match self.current_direction {
+            let keyframe = match current_direction {
                 AnimationDirection::Normal => self.computed_steps.last().unwrap(),
                 AnimationDirection::Reverse => self.computed_steps.first().unwrap(),
                 _ => unreachable!("Current animation direction can only be `normal` or `reverse`."),
@@ -945,7 +1323,7 @@ impl Animation {
         let next_keyframe_index;
         let prev_keyframe_index;
         let num_steps = self.computed_steps.len();
-        match self.current_direction {
+        match current_direction {
             AnimationDirection::Normal => {
                 next_keyframe_index = self
                     .computed_steps
@@ -1000,7 +1378,7 @@ impl Animation {
         }
 
         // Interpolate a new value for each animating property
-        let reversed = self.current_direction != AnimationDirection::Normal;
+        let reversed = current_direction != AnimationDirection::Normal;
         for property_index in 0..self.number_of_animating_properties {
             let Some(previous_keyframe) = self.next_relevant_keyframe_for_property_in_direction(
                 property_index,
@@ -1027,7 +1405,7 @@ impl Animation {
             let percentage_between_keyframes =
                 (next_keyframe.start_percentage - previous_keyframe.start_percentage).abs();
             let duration_between_keyframes = percentage_between_keyframes * self.duration;
-            let direction_aware_prev_keyframe_start_percentage = match self.current_direction {
+            let direction_aware_prev_keyframe_start_percentage = match current_direction {
                 AnimationDirection::Normal => previous_keyframe.start_percentage,
                 AnimationDirection::Reverse => 1. - previous_keyframe.start_percentage,
                 _ => unreachable!(),
@@ -1042,7 +1420,8 @@ impl Animation {
                 duration: duration_between_keyframes,
             };
 
-            let value = animation.calculate_value(progress_between_keyframes);
+            let value =
+                animation.calculate_value_with_before_flag(progress_between_keyframes, before_flag);
             map.insert(value.id().to_owned(), value);
         }
     }
@@ -1059,6 +1438,10 @@ impl fmt::Debug for Animation {
             .field("state", &self.state)
             .field("direction", &self.direction)
             .field("current_direction", &self.current_direction)
+            .field("timeline", &self.timeline)
+            .field("timeline_sample", &self.timeline_sample)
+            .field("auto_duration", &self.auto_duration)
+            .field("unsupported_change", &self.unsupported_change)
             .field("cascade_style", &())
             .finish()
     }
@@ -1286,7 +1669,7 @@ impl ElementAnimationSet {
     pub fn needs_animation_ticks(&self) -> bool {
         self.animations
             .iter()
-            .any(|animation| animation.state.needs_to_be_ticked())
+            .any(|animation| animation.needs_to_be_ticked())
             || self
                 .transitions
                 .iter()
@@ -1297,7 +1680,7 @@ impl ElementAnimationSet {
     pub fn running_animation_and_transition_count(&self) -> usize {
         self.animations
             .iter()
-            .filter(|animation| animation.state.needs_to_be_ticked())
+            .filter(|animation| animation.needs_to_be_ticked())
             .count()
             + self
                 .transitions
@@ -1874,8 +2257,10 @@ pub fn maybe_start_animations<E>(
         };
 
         debug!("maybe_start_animations: name={}", name);
-        let duration = style.animation_duration_mod(i).seconds() as f64;
-        if duration == 0. {
+        let timeline = animation_timeline_kind(style, i);
+        let duration_value = style.animation_duration_mod(i);
+        let duration = duration_value.seconds() as f64;
+        if timeline == AnimationTimelineKind::Document && duration == 0. {
             continue;
         }
 
@@ -1891,6 +2276,19 @@ pub fn maybe_start_animations<E>(
         let delay = style.animation_delay_mod(i).seconds() as f64;
 
         let iteration_count = style.animation_iteration_count_mod(i);
+        let auto_duration = duration_value.is_auto();
+        let timeline = match timeline {
+            // The timings that convert to proportions of a scroll timeline's
+            // range as measured in Chromium (see `scroll_timeline_progress`).
+            AnimationTimelineKind::Scroll(..)
+                if iteration_count.0.is_infinite()
+                    || !(iteration_count.0 > 0.)
+                    || (!auto_duration && (!(duration > 0.) || delay < 0.)) =>
+            {
+                AnimationTimelineKind::Unsupported(UnsupportedTimeline::Timing)
+            },
+            timeline => timeline,
+        };
         let iteration_state = if iteration_count.0.is_infinite() {
             KeyframesIterationState::Infinite(0.0)
         } else {
@@ -1910,10 +2308,18 @@ pub fn maybe_start_animations<E>(
 
         let now = context.current_time_for_animations;
         let started_at = now + delay;
-        let starting_progress = (now - started_at) / duration;
-        let state = match style.animation_play_state_mod(i) {
-            AnimationPlayState::Paused => AnimationState::Paused(starting_progress),
-            AnimationPlayState::Running => AnimationState::Pending,
+        let time_based = timeline == AnimationTimelineKind::Document;
+        let starting_progress = if time_based {
+            (now - started_at) / duration
+        } else {
+            0.
+        };
+        // An animation that is not time-based is not pending: its value
+        // follows its timeline (and a paused one holds the start of its range).
+        let state = match (style.animation_play_state_mod(i), time_based) {
+            (AnimationPlayState::Paused, _) => AnimationState::Paused(starting_progress),
+            (AnimationPlayState::Running, true) => AnimationState::Pending,
+            (AnimationPlayState::Running, false) => AnimationState::Running,
         };
 
         // Determine the set of animating properties. This is not equivalent to the set of changed properties
@@ -1955,11 +2361,17 @@ pub fn maybe_start_animations<E>(
             current_direction: initial_direction,
             number_of_animating_properties,
             is_new: true,
+            timeline,
+            timeline_sample: None,
+            auto_duration,
+            unsupported_change: None,
         };
 
         // If we started with a negative delay, make sure we iterate the animation if
         // the delay moves us past the first iteration.
-        new_animation.iterate_by(starting_progress);
+        if time_based {
+            new_animation.iterate_by(starting_progress);
+        }
 
         animation_state.dirty = true;
 
@@ -2000,6 +2412,10 @@ mod tests {
             current_direction: AnimationDirection::Normal,
             number_of_animating_properties: 0,
             is_new: false,
+            timeline: AnimationTimelineKind::Document,
+            timeline_sample: None,
+            auto_duration: false,
+            unsupported_change: None,
         }
     }
 

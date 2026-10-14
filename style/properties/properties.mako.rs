@@ -1534,10 +1534,14 @@ pub mod style_structs {
             }
 
             /// Returns true if animation properties are equal between styles, but without
-            /// considering keyframe data and animation-timeline.
+            /// considering keyframe data. (The timeline and the range are compared: a
+            /// scroll-driven animation follows them.)
             #[cfg(feature = "servo")]
             pub fn animations_equals(&self, other: &Self) -> bool {
                 self.animation_name_iter().eq(other.animation_name_iter()) &&
+                self.animation_timeline_iter().eq(other.animation_timeline_iter()) &&
+                self.animation_range_start_iter().eq(other.animation_range_start_iter()) &&
+                self.animation_range_end_iter().eq(other.animation_range_end_iter()) &&
                 self.animation_composition_iter().eq(other.animation_composition_iter()) &&
                 self.animation_delay_iter().eq(other.animation_delay_iter()) &&
                 self.animation_direction_iter().eq(other.animation_direction_iter()) &&
