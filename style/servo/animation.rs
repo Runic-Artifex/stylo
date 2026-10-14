@@ -95,6 +95,15 @@ impl PropertyAnimation {
     }
 }
 
+/// A time on the animation timeline in whole microseconds, the precision
+/// browsers hold animation times in (Chromium's `AnimationTimeDelta`).
+/// Durations and delays are single-precision seconds here (100ms is
+/// 0.10000000149011612 s), and sums of them miss a boundary they reach
+/// exactly by a rounding error: times are compared in microseconds.
+pub fn time_in_microseconds(seconds: f64) -> i64 {
+    (seconds * 1e6).round() as i64
+}
+
 /// This structure represents the state of an animation.
 #[derive(Clone, Debug, MallocSizeOf, PartialEq)]
 pub enum AnimationState {
@@ -640,7 +649,10 @@ impl Animation {
         // A rendering step can arrive after more than one iteration has
         // elapsed. Advancing only once leaves both the iteration and
         // alternate direction stale until later frames catch up.
-        let elapsed_iterations = ((time - self.started_at) / self.duration).floor();
+        let elapsed_iterations = ((time_in_microseconds(time)
+            - time_in_microseconds(self.started_at)) as f64
+            / time_in_microseconds(self.duration) as f64)
+            .floor();
         self.iterate_by(elapsed_iterations) > 0.
     }
 
@@ -710,8 +722,11 @@ impl Animation {
 
     /// Whether or not the current iteration is over. Note that this method assumes that
     /// the animation is still running.
+    /// The next iteration starts at the boundary itself, as in browsers.
     fn iteration_over(&self, time: f64) -> bool {
-        time > (self.started_at + self.current_iteration_duration())
+        time_in_microseconds(time)
+            >= time_in_microseconds(self.started_at)
+                + time_in_microseconds(self.current_iteration_duration())
     }
 
     /// Assuming this animation is running, whether or not it is on the last iteration.
@@ -730,7 +745,10 @@ impl Animation {
         let progress = match self.state {
             AnimationState::Finished => return true,
             AnimationState::Paused(progress) => progress,
-            AnimationState::Running => (time - self.started_at) / self.duration,
+            AnimationState::Running => {
+                return time_in_microseconds(time) - time_in_microseconds(self.started_at)
+                    >= time_in_microseconds(self.current_iteration_duration());
+            },
             AnimationState::Pending | AnimationState::Canceled => return false,
         };
 
@@ -778,7 +796,7 @@ impl Animation {
                 Finished => {
                     if self.has_ended(now) {
                         self.state = Finished;
-                    } else if self.started_at <= now {
+                    } else if time_in_microseconds(self.started_at) <= time_in_microseconds(now) {
                         self.state = Running;
                     } else {
                         self.state = Pending;
@@ -799,7 +817,9 @@ impl Animation {
             }
 
             // Don't check old_state when delay changed.
-            if self.state == Pending && self.started_at <= now {
+            if self.state == Pending
+                && time_in_microseconds(self.started_at) <= time_in_microseconds(now)
+            {
                 self.state = Running;
             }
         } else {
@@ -844,7 +864,10 @@ impl Animation {
 
             // Try to detect when we should skip straight to the running phase to
             // avoid sending multiple animationstart events.
-            if self.state == Pending && self.started_at <= now && old_state != Pending {
+            if self.state == Pending
+                && time_in_microseconds(self.started_at) <= time_in_microseconds(now)
+                && old_state != Pending
+            {
                 self.state = Running;
             }
         }
@@ -1170,7 +1193,9 @@ impl Transition {
     /// not take into account canceling i.e. when an animation or transition is
     /// canceled due to changes in the style.
     pub fn has_ended(&self, time: f64) -> bool {
-        time >= self.start_time + (self.property_animation.duration)
+        time_in_microseconds(time)
+            >= time_in_microseconds(self.start_time)
+                + time_in_microseconds(self.property_animation.duration)
     }
 
     /// Update the given animation at a given point of progress.
