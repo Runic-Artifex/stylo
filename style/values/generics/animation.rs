@@ -24,13 +24,26 @@ use thin_vec::ThinVec;
 )]
 #[repr(C, u8)]
 pub enum GenericAnimationDuration<T> {
-    /// The initial value. However, we serialize this as 0s if the preference is disabled.
+    /// The initial value. However, we serialize this as 0s if `auto` does not
+    /// parse (`auto_animation_duration_enabled`).
     Auto,
     /// The time value, <time [0s,∞]>.
     Time(T),
 }
 
 pub use self::GenericAnimationDuration as AnimationDuration;
+
+/// Whether `animation-duration: auto` parses and serialises as `auto`: with
+/// scroll-driven animations, which Servo runs (scroll timelines) behind
+/// `layout.unimplemented`. Otherwise `auto` is only the initial value, and
+/// serialises as `0s`.
+pub fn auto_animation_duration_enabled() -> bool {
+    #[cfg(feature = "servo")]
+    if crate::pref!("layout.unimplemented") {
+        return true;
+    }
+    crate::pref!("layout.css.scroll-driven-animations.enabled")
+}
 
 impl<T> AnimationDuration<T> {
     /// Returns the `auto` value.
@@ -64,7 +77,7 @@ impl<T: ToCss + Zero> ToCss for AnimationDuration<T> {
     {
         match *self {
             Self::Auto => {
-                if crate::pref!("layout.css.scroll-driven-animations.enabled") {
+                if auto_animation_duration_enabled() {
                     dest.write_str("auto")
                 } else {
                     Self::Time(T::zero()).to_css(dest)
@@ -80,7 +93,7 @@ impl<T: ToTyped + Zero> ToTyped for AnimationDuration<T> {
     fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
         match *self {
             Self::Auto => {
-                if crate::pref!("layout.css.scroll-driven-animations.enabled") {
+                if auto_animation_duration_enabled() {
                     dest.push(TypedValue::Keyword(KeywordValue(CssString::from("auto"))));
                     Ok(())
                 } else {

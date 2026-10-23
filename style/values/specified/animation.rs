@@ -154,19 +154,9 @@ impl TransitionBehavior {
 /// A specified value for the `animation-duration` property.
 pub type AnimationDuration = generics::GenericAnimationDuration<Time>;
 
-/// Whether `animation-duration: auto` parses: with scroll-driven animations,
-/// which Servo runs (scroll timelines) behind `layout.unimplemented`.
-fn auto_animation_duration_enabled() -> bool {
-    #[cfg(feature = "servo")]
-    if crate::pref!("layout.unimplemented") {
-        return true;
-    }
-    crate::pref!("layout.css.scroll-driven-animations.enabled")
-}
-
 impl Parse for AnimationDuration {
     fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
-        if auto_animation_duration_enabled()
+        if generics::auto_animation_duration_enabled()
             && input.try_parse(|i| i.expect_ident_matching("auto")).is_ok()
         {
             return Ok(Self::auto());
